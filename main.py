@@ -1,12 +1,12 @@
+import torch, random
 from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel, Field
 from typing import Optional
-import torch
-import torch.nn as nn
 from contextlib import asynccontextmanager
 
 from transformer_model import CzecherTransformer
 from czecher_tokenizer.bpe_tokenizer import GPTTokenizer
+from datasets import load_dataset
 
 torch.set_grad_enabled(False)
 
@@ -14,20 +14,6 @@ torch.set_grad_enabled(False)
 def get_params(layers: int = 12):
     model_dim = layers * 64
     return model_dim * 64, max(1, (model_dim + 127) // 128), 4 * model_dim
-
-
-# num_layers = 12
-# model_dim, num_heads, dim_ff = get_params(layers=num_layers)
-
-# print(f'Initializing model and tokenizer...')
-# tokenizer = GPTTokenizer(json_file='tokenizer.json')
-# print(f'Tokenizer loaded.')
-# model = CzecherTransformer(vocab_size=tokenizer.get_vocab_size(), pad_id=tokenizer.get_pad_token_id(), max_tokens=128, num_layers=num_layers, d_model=model_dim, embedding_dim=model_dim, nhead=num_heads, dim_ff=dim_ff)
-# model = model.load('10m_4xGPU_12layer_2epoch_1.pt', map_location='cpu')
-# model.eval()
-# print(f'Model and tokenizer successfully loaded, ready for requests.')
-
-# app = FastAPI(title="CzecherAPI", version="1.0.0")
 
 
 class PunctuateRequest(BaseModel):
@@ -43,22 +29,31 @@ class PunctuateResponse(BaseModel):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    print("Initializing model and tokenizer...")
-    tokenizer = GPTTokenizer(json_file='tokenizer.json')
-    print(f'Tokenizer loaded.')
-    model = CzecherTransformer.load('10m_4xGPU_12layer_2epoch_1.pt', map_location='cpu')
+    print(f'Loading dataset...')
+    dataset = load_dataset("josefbednar/11m-czech-sentences", split="train")
+
+    print("Initializing tokenizer...")
+    tokenizer = GPTTokenizer(json_file='syn2006pub_11m_tokenizer.json')
+    print("Initializing model...")
+    model = CzecherTransformer.load('11m_4xGPU_12layers.pt', map_location='cpu')
     model.eval()
 
+    app.state.dataset = dataset
     app.state.model = model
     app.state.tokenizer = tokenizer
-    print("Model and tokenizer ready.")
+    print("Ready for production.")
     yield
 
-app = FastAPI(title="CzecherAPI", version="1.0.0", lifespan=lifespan)
+app = FastAPI(title="CzecherAPI", version="1.1.0", lifespan=lifespan)
 
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+@app.get("/random-text")
+def random_text(request: Request):
+    dataset = request.app.state.dataset
+    return {"text": dataset[random.randint(0, len(dataset) - 1)]['text']}
 
 @app.post("/punctuate", response_model=PunctuateResponse)
 def punctuate_endpoint(payload: PunctuateRequest, request: Request):
@@ -76,4 +71,3 @@ def punctuate_endpoint(payload: PunctuateRequest, request: Request):
         return PunctuateResponse(punctuated=punctuated, seconds=seconds)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Punctuation failed: {e}")
-    
